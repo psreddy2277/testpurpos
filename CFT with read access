@@ -1,0 +1,491 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Prisma Cloud AWS CodeCommit Integration",
+  "Mappings": {
+    "PrismaCloudEnvironment": {
+      "env": {
+        "organizationID": "540411623009",
+        "region": "us-west-1",
+        "webhookURL": "https://api4.prismacloud.io/bridgecrew/api/v1/awsCodeCommit/webhook",
+        "SnsNameForConfirmCustomerDeployment": "cloudformation_events_handler"
+      }
+    }
+  },
+  "Rules": {
+    "RegionCompatabilityRule": {
+      "RuleCondition": {
+        "Fn::Not": [
+          {
+            "Fn::Or": [
+              {
+                "Fn::EachMemberIn": [
+                  [
+                    "us-west-1",
+                    {
+                      "Ref": "AWS::Region"
+                    }
+                  ],
+                  [
+                    "us-east-1",
+                    "us-east-2",
+                    "us-west-1",
+                    "us-west-2",
+                    "ap-south-1",
+                    "ap-southeast-1",
+                    "ap-southeast-2",
+                    "ap-southeast-3",
+                    "ap-northeast-1",
+                    "ap-northeast-3",
+                    "ca-central-1",
+                    "eu-west-1",
+                    "eu-west-2",
+                    "eu-west-3",
+                    "eu-central-1"
+                  ]
+                ]
+              },
+              {
+                "Fn::EachMemberIn": [
+                  [
+                    "us-west-1",
+                    {
+                      "Ref": "AWS::Region"
+                    }
+                  ],
+                  [
+                    "us-gov-west-1"
+                  ]
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Equals": [
+              "Region is not compatible",
+              "true"
+            ]
+          },
+          "AssertionDescription": "Prisma Cloud AWS CodeCommit Integration cannot be completed in incompatible regions."
+        }
+      ]
+    }
+  },
+  "Metadata": {
+    "AWS::CloudFormation::Interface": {
+      "ParameterGroups": [
+        {
+          "Label": {
+            "default": "Required Parameters"
+          },
+          "Parameters": [
+            "ResourceNamePrefix",
+            "ExternalID"
+          ]
+        }
+      ],
+      "ParameterLabels": {
+        "ResourceNamePrefix": {
+          "default": "Resource name prefix"
+        },
+        "ExternalID": {
+          "default": "ExternalID"
+        }
+      }
+    }
+  },
+  "Parameters": {
+    "ResourceNamePrefix": {
+      "Description": "Names of resources created by the stack will be prefixed with this value to ensure uniqueness.",
+      "Type": "String",
+      "Default": "prisma-cloud-cas",
+      "MinLength": "1",
+      "MaxLength": "32",
+      "AllowedPattern": "^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$",
+      "ConstraintDescription": "Invalid resource name prefix value.  Must match pattern ^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$"
+    },
+    "ExternalID": {
+      "Description": "The cross-account access role created by the stack will use this value for its ExternalID. Do not change this value!",
+      "Type": "String",
+      "MinLength": "2",
+      "MaxLength": "1224",
+      "AllowedPattern": "[\\w+=,.@:\\/-]*",
+      "ConstraintDescription": "Invalid ExternalID value.  Must match pattern [\\w+=,.@:\\/-]*"
+    }
+  },
+  "Resources": {
+    "PrismaCloudCCTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "ResourceNamePrefix"
+              },
+              "-cc-topic"
+            ]
+          ]
+        }
+      }
+    },
+    "PrismaCloudCCTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "CodeNotification_publish",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "codestar-notifications.amazonaws.com"
+              },
+              "Action": "SNS:Publish",
+              "Resource": "*"
+            }
+          ]
+        },
+        "Topics": [
+          {
+            "Ref": "PrismaCloudCCTopic"
+          }
+        ]
+      }
+    },
+    "PrismaCloudCCSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "PrismaCloudCCTopic"
+        },
+        "Endpoint": {
+          "Fn::FindInMap": [
+            "PrismaCloudEnvironment",
+            "env",
+            "webhookURL"
+          ]
+        },
+        "Protocol": "https",
+        "DeliveryPolicy": {
+          "healthyRetryPolicy": {
+            "numRetries": 3,
+            "minDelayTarget": 60,
+            "maxDelayTarget": 120,
+            "numMinDelayRetries": 1,
+            "numMaxDelayRetries": 2,
+            "numNoDelayRetries": 0,
+            "backoffFunction": "exponential"
+          }
+        }
+      }
+    },
+    "PrismaCloudCCCrossAccountAccessRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Join": [
+            "",
+            [
+              {
+                "Ref": "ResourceNamePrefix"
+              },
+              "-cc-role"
+            ]
+          ]
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Fn::FindInMap": [
+                          "PrismaCloudEnvironment",
+                          "env",
+                          "organizationID"
+                        ]
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Condition": {
+                "StringEquals": {
+                  "sts:ExternalId": {
+                    "Ref": "ExternalID"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "PrismaCloudCCPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "CodeCommitListRepositories",
+                  "Action": [
+                    "codecommit:ListRepositories"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "CodeCommitAccess",
+                  "Action": [
+                    "codecommit:GitPull",
+                    "codecommit:ListBranches",
+                    "codecommit:GetBranch",
+                    "codecommit:GetPullRequest",
+                    "codecommit:GetFolder",
+                    "codecommit:GetFile",
+                    "codecommit:GetBlob",
+                    "codecommit:GetCommitsFromMergeBase",
+                    "codecommit:GetComment",
+                    "codecommit:GetCommit",
+                    "codecommit:GetDifferences",
+                    "codecommit:BatchGetRepositories",
+                    "codecommit:GetRepository",
+                    "codecommit:GetRepositoryTriggers",
+                    "codecommit:GetTree",
+                    "codecommit:GetReferences",
+                    "codecommit:GetObjectIdentifier",
+                    "codecommit:GetCommitHistory",
+                    "codecommit:BatchGetPullRequests",
+                    "codecommit:BatchGetCommits",
+                    "codecommit:GetCommentsForComparedCommit",
+                    "codecommit:PostCommentForComparedCommit",
+                    "codecommit:ListPullRequests",
+                    "codecommit:ListAssociatedApprovalRuleTemplatesForRepository",
+                    "codecommit:ListApprovalRuleTemplates",
+                    "codecommit:GetApprovalRuleTemplate",
+                    "codecommit:ListRepositoriesForApprovalRuleTemplate",
+                    "codecommit:GetBranch",
+                    "codestar-notifications:CreateNotificationRule",
+                    "codestar-notifications:DeleteNotificationRule",
+                    "codestar-notifications:DeleteTarget",
+                    "codestar-notifications:DescribeNotificationRule",
+                    "codestar-notifications:ListEventTypes",
+                    "codestar-notifications:ListNotificationRules",
+                    "codestar-notifications:ListTagsForResource",
+                    "codestar-notifications:ListTargets",
+                    "codestar-notifications:Subscribe",
+                    "codestar-notifications:TagResource",
+                    "codestar-notifications:Unsubscribe",
+                    "codestar-notifications:UntagResource",
+                    "codestar-notifications:UpdateNotificationRule"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*"
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "PrismaCloudIAMPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "IAMAccess",
+                  "Action": [
+                    "iam:ListAccountAliases",
+                    "iam:ListPolicies",
+                    "iam:ListGroupPolicies",
+                    "iam:ListPoliciesGrantingServiceAccess",
+                    "iam:ListRoles",
+                    "iam:ListGroupsForUser",
+                    "iam:ListUsers",
+                    "iam:ListGroups",
+                    "iam:ListRolePolicies",
+                    "iam:GetAccountAuthorizationDetails",
+                    "iam:GetGroup"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "CreateCodeStarLink",
+                  "Action": [
+                    "iam:CreateServiceLinkedRole"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:iam::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":role/aws-service-role/codestar-notifications.amazonaws.com/AWSServiceRoleForCodeStarNotifications"
+                      ]
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "PrismaCloudOrganizationPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "OrganizationAccess",
+                  "Action": [
+                    "organizations:ListPolicies",
+                    "organizations:ListDelegatedAdministrators",
+                    "organizations:ListAccounts"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*"
+                }
+              ]
+            }
+          },
+          {
+            "PolicyName": "PrismaCloudCCRolePolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowDescribingIAMRole",
+                  "Action": [
+                    "iam:GetRole",
+                    "iam:GetRolePolicy"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": {
+                    "Fn::Join": [
+                      "",
+                      [
+                        "arn:aws:iam::",
+                        {
+                          "Ref": "AWS::AccountId"
+                        },
+                        ":role/",
+                        {
+                          "Ref": "ResourceNamePrefix"
+                        },
+                        "-cc-role"
+                      ]
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "PrismaCloudSnsCustomResource": {
+      "Type": "Custom::PrismaCloudSnsCustomResource",
+      "DependsOn": [
+        "PrismaCloudCCCrossAccountAccessRole",
+        "PrismaCloudCCTopic"
+      ],
+      "Properties": {
+        "ServiceToken": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:sns:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Fn::FindInMap": [
+                  "PrismaCloudEnvironment",
+                  "env",
+                  "organizationID"
+                ]
+              },
+              ":",
+              {
+                "Fn::FindInMap": [
+                  "PrismaCloudEnvironment",
+                  "env",
+                  "SnsNameForConfirmCustomerDeployment"
+                ]
+              }
+            ]
+          ]
+        },
+        "StackName": {
+          "Ref": "AWS::StackName"
+        },
+        "CrossAccountRoleArn": {
+          "Fn::GetAtt": [
+            "PrismaCloudCCCrossAccountAccessRole",
+            "Arn"
+          ]
+        },
+        "WebhookSnsTopicName": {
+          "Fn::GetAtt": [
+            "PrismaCloudCCTopic",
+            "TopicName"
+          ]
+        },
+        "ExternalId": {
+          "Ref": "ExternalID"
+        },
+        "DeploymentRegion": {
+          "Ref": "AWS::Region"
+        },
+        "ActionType": "CODE_COMMIT_SETUP",
+        "TemplateVersion": "1.1",
+        "AWSAccountId": {
+          "Ref": "AWS::AccountId"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "RoleARN": {
+      "Description": "Cross-account access role ARN to share with Prisma Cloud CAS for Code Commit integration",
+      "Value": {
+        "Fn::GetAtt": [
+          "PrismaCloudCCCrossAccountAccessRole",
+          "Arn"
+        ]
+      }
+    },
+    "WebhookSnsTopicName": {
+      "Description": "Webhook SNS ARN to share with Prisma Cloud CAS for Code Commit integration",
+      "Value": {
+        "Fn::GetAtt": [
+          "PrismaCloudCCTopic",
+          "TopicName"
+        ]
+      }
+    },
+    "DeploymentRegion": {
+      "Description": "The region that the customer installed this cloud-formation template",
+      "Value": {
+        "Ref": "AWS::Region"
+      }
+    },
+    "TemplateVersion": {
+      "Description": "Prisma Cloud CAS template version",
+      "Value": "1.1"
+    }
+  }
+}
